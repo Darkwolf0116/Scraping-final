@@ -11,3 +11,9 @@ wheels/
 
 # Scraper output
 output/
+
+# Entorno local (secretos)
+.env
+
+# Datos generados (índice RAG)
+data/

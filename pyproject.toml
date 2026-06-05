@@ -1,11 +1,21 @@
 [project]
 name = "experimento"
 version = "0.1.0"
-description = "Web scraper for Fundación Valle del Lili sitemap"
+description = "Ecosistema agéntico (OpenFang) + RAG y scraper para la Fundación Valle del Lili"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    # Scraper (existente)
     "scrapling[fetchers]",
     "markdownify>=0.14.1",
     "lxml>=5.0.0",
+    # Ecosistema OpenFang: ingesta RAG, orquestador y configuración
+    "requests>=2.31.0",
+    "python-frontmatter>=1.1.0",
+    "python-dotenv>=1.0.0",
+    "tomlkit>=0.13.0",
+    "numpy>=1.26.0",
+    # Opcional: servidor MCP (scripts/rag_mcp_server.py) para modelos con
+    # tool-calling. No se usa en la ruta gemma; se mantiene como alternativa.
+    "mcp>=1.2.0",
 ]
