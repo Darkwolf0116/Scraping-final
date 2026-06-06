@@ -9,13 +9,14 @@ dependencies = [
     "scrapling[fetchers]",
     "markdownify>=0.14.1",
     "lxml>=5.0.0",
+    # Google Gemini SDK (chat + embeddings)
+    "google-genai>=1.0.0",
     # Ecosistema OpenFang: ingesta RAG, orquestador y configuración
     "requests>=2.31.0",
     "python-frontmatter>=1.1.0",
     "python-dotenv>=1.0.0",
     "tomlkit>=0.13.0",
     "numpy>=1.26.0",
-    # Opcional: servidor MCP (scripts/rag_mcp_server.py) para modelos con
-    # tool-calling. No se usa en la ruta gemma; se mantiene como alternativa.
+    # Servidor MCP (scripts/rag_mcp_server.py) para exponer RAG como herramienta
     "mcp>=1.2.0",
 ]

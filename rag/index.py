@@ -8,7 +8,7 @@ import sqlite3
 
 import numpy as np
 
-from .embeddings import EMBEDDING_MODEL, embed, embed_one
+from .embeddings import active_model, embed, embed_one
 from .paths import INDEX_PATH
 
 
@@ -51,7 +51,7 @@ def build(chunks, path: str = INDEX_PATH, model: str | None = None) -> tuple[int
         )
         conn.executemany(
             "INSERT INTO meta(key,value) VALUES(?,?)",
-            [("embedding_model", model or EMBEDDING_MODEL), ("dim", str(dim)), ("count", str(len(chunks)))],
+            [("embedding_model", model or active_model()), ("dim", str(dim)), ("count", str(len(chunks)))],
         )
         conn.commit()
     finally:
@@ -59,7 +59,7 @@ def build(chunks, path: str = INDEX_PATH, model: str | None = None) -> tuple[int
     return len(chunks), dim
 
 
-# Caché en memoria (el servidor MCP es de larga vida): {path: (mtime, (meta, matriz))}
+# Caché en memoria del índice: {path: (mtime, (meta, matriz_normalizada))}
 _CACHE: dict = {}
 
 
@@ -93,24 +93,38 @@ def _load(path: str):
     return data
 
 
-def search(query: str, k: int = 5, path: str = INDEX_PATH, model: str | None = None) -> list[dict]:
-    """Devuelve los k chunks más similares a la consulta (con su score de coseno)."""
+def search_vec(qvec, k: int = 5, seccion: str | None = None, path: str = INDEX_PATH) -> list[dict]:
+    """Ranking por coseno a partir de un vector de consulta YA calculado.
+
+    Permite reutilizar un mismo embedding para varias búsquedas (p. ej. general
+    + filtrada por sección) sin re-embeber, lo que ahorra llamadas.
+    """
     if not os.path.exists(path):
         raise FileNotFoundError(
-            f"Índice no encontrado: {path}. Ejecuta primero: uv run python scripts/ingest_docs.py"
+            f"Índice no encontrado: {path}. Ejecuta: uv run python scripts/ingest_docs.py"
         )
     meta, mat = _load(path)
     if not meta:
         return []
-    q = np.asarray(embed_one(query, model=model), dtype=np.float32)
+    q = np.asarray(qvec, dtype=np.float32)
     nq = np.linalg.norm(q)
     if nq > 0:
         q = q / nq
     scores = mat @ q
-    order = np.argsort(-scores)[: max(1, k)]
-    results = []
+    order = np.argsort(-scores)
+    results: list[dict] = []
     for i in order:
-        item = dict(meta[int(i)])
-        item["score"] = round(float(scores[int(i)]), 4)
+        i = int(i)
+        if seccion and meta[i]["seccion"] != seccion:
+            continue
+        item = dict(meta[i])
+        item["score"] = round(float(scores[i]), 4)
         results.append(item)
+        if len(results) >= max(1, k):
+            break
     return results
+
+
+def search(query: str, k: int = 5, seccion: str | None = None, path: str = INDEX_PATH, model: str | None = None) -> list[dict]:
+    """Embede la consulta y devuelve los k chunks más similares (con score)."""
+    return search_vec(embed_one(query, model=model), k=k, seccion=seccion, path=path)

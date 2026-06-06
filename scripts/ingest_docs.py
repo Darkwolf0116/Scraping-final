@@ -20,10 +20,12 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from rag.chunking import chunk_file  # noqa: E402
-from rag.embeddings import EMBEDDING_MODEL  # noqa: E402
+from rag.embeddings import active_model  # noqa: E402
 from rag.index import build  # noqa: E402
 from rag.paths import INDEX_PATH, scraped_data_dir  # noqa: E402
 
+# Núcleo institucional. Se EXCLUYE "posts" (blog/noticias): metía ruido y
+# ahogaba los perfiles de especialistas en el ranking de búsqueda.
 DEFAULT_SECTIONS = ["especialistas", "sedes", "servicios", "pages"]
 NOISE = ("Enlaces encontrados en esta página", "Especialistas que pueden atenderte")
 
@@ -77,7 +79,7 @@ def main() -> None:
                 print(f"\n[ERROR] Chunk con contenido ruidoso ('{marker}') en {c.source}")
                 sys.exit(2)
 
-    print(f"\nGenerando embeddings de {len(all_chunks)} chunks con '{EMBEDDING_MODEL}' (puede tardar)...")
+    print(f"\nGenerando embeddings de {len(all_chunks)} chunks con '{active_model()}'...")
     n, dim = build(all_chunks)
     print(f"\n[ok] Índice construido: {n} chunks (dim={dim})")
     print(f"     Archivo: {INDEX_PATH}")

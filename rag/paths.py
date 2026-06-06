@@ -10,8 +10,13 @@ import os
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DATA_DIR = os.path.join(ROOT_DIR, "data")
 INDEX_PATH = os.path.join(DATA_DIR, "rag_index.sqlite")
+# Índice de normativa aprobada (alimentado por la Hand + aprobación HITL).
+REGULATORY_INDEX_PATH = os.path.join(DATA_DIR, "regulatory_index.sqlite")
+# Borradores de normativa pendientes de aprobación (HITL).
+PENDING_REGULATORY_DIR = os.path.join(DATA_DIR, "pending_regulatory")
 # Manifiesto del agente (define la "persona"/system_prompt; fuente única).
 AGENT_MANIFEST = os.path.join(ROOT_DIR, "agents", "public_agent.toml")
+INTERNAL_AGENT_MANIFEST = os.path.join(ROOT_DIR, "agents", "internal_agent.toml")
 
 
 def scraped_data_dir() -> str:

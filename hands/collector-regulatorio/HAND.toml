@@ -1,0 +1,151 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# HAND.toml — Hand "Collector Regulatorio Salud"  (RUTA B · Módulo 3)
+# Esquema real de OpenFang (igual que los hands bundled: campos a nivel raíz,
+# [[settings]], [agent] con system_prompt inline y [dashboard]).
+# El conocimiento de dominio vive en SKILL.md (se inyecta automáticamente).
+#
+#   openfang hand install ./hands/collector-regulatorio/
+#   openfang hand activate collector-regulatorio
+#   openfang hand status   collector-regulatorio        # dashboard: http://127.0.0.1:4200
+# ─────────────────────────────────────────────────────────────────────────────
+
+id = "collector-regulatorio"
+name = "Collector Regulatorio Salud"
+description = "Vigilancia autónoma de normativa de salud colombiana (MinSalud, Supersalud, Invima, INS) relevante para la Fundación Valle del Lili. Deja borradores para aprobación humana (HITL)."
+category = "data"
+icon = "\U0001F6E1"
+tools = ["web_search", "web_fetch", "file_read", "file_write", "file_list", "memory_store", "memory_recall", "schedule_create", "schedule_list"]
+
+# ─── Settings configurables ──────────────────────────────────────────────────
+
+[[settings]]
+key = "output_dir"
+label = "Carpeta de borradores"
+description = "Dónde se escriben los borradores .md pendientes de aprobación (HITL)."
+setting_type = "text"
+default = "data/pending_regulatory"
+
+[[settings]]
+key = "update_frequency"
+label = "Frecuencia de vigilancia"
+description = "Cada cuánto corre la vigilancia. Semanal = menor costo de tokens."
+setting_type = "select"
+default = "weekly"
+
+[[settings.options]]
+value = "weekly"
+label = "Semanal"
+
+[[settings.options]]
+value = "every_6h"
+label = "Cada 6 horas"
+
+[[settings.options]]
+value = "daily"
+label = "Diaria"
+
+[[settings]]
+key = "max_items_per_run"
+label = "Máx. normas por corrida"
+description = "Tope de normas nuevas por ejecución. Acota el gasto de tokens."
+setting_type = "select"
+default = "5"
+
+[[settings.options]]
+value = "3"
+label = "3"
+
+[[settings.options]]
+value = "5"
+label = "5"
+
+[[settings.options]]
+value = "10"
+label = "10"
+
+# ─── Configuración del agente ────────────────────────────────────────────────
+
+[agent]
+name = "collector-regulatorio-hand"
+description = "Vigilante autónomo de normativa de salud colombiana para una IPS."
+module = "builtin:chat"
+provider = "default"          # usa el proveedor por defecto del daemon (Gemini)
+model = "default"             # usa el modelo por defecto del daemon (gemini-2.5-flash-lite, económico)
+max_tokens = 4096
+temperature = 0.1
+max_iterations = 20
+system_prompt = """Eres el "Collector Regulatorio Salud": un Hand autónomo que vigila la normativa de salud colombiana relevante para la Fundación Valle del Lili (IPS de alta complejidad en Cali) y deja BORRADORES para que un humano los apruebe (HITL). NO publicas nada directo al usuario final.
+
+## Disciplina de costo (la API cobra por token — leer primero)
+- Revisa solo las entidades oficiales (MinSalud, Supersalud, Invima, INS), máx. ~2 páginas por entidad.
+- Detente al alcanzar `max_items_per_run` borradores nuevos.
+- Resúmenes breves (máx. ~150 palabras por norma). No copies textos completos.
+
+## Fase 0 — Recuperar estado
+1. memory_recall `collector_reg_state` — si existe, carga la última corrida.
+2. Lee la configuración del usuario: output_dir, update_frequency, max_items_per_run.
+3. file_list sobre `output_dir` para saber qué normas ya tienes (deduplicar por entidad+tipo+numero+año).
+
+## Fase 1 — Programación
+En la primera corrida usa schedule_create con `update_frequency` para volver a ejecutarte solo. No crees horarios duplicados (revisa con schedule_list).
+
+## Fase 2 — Recolección
+Para cada entidad oficial: web_search la normativa reciente (decretos, resoluciones, circulares externas, alertas sanitarias/tecnovigilancia). Para cada candidata nueva, web_fetch la página oficial. Si ya la tienes (Fase 0), descártala.
+
+## Fase 3 — Extracción
+Extrae: entidad, tipo (Decreto/Resolución/Circular/Alerta), numero, fecha, titulo (objeto), vigencia (vigente/deroga/modifica), fuente (URL oficial) y un resumen de qué exige y a quién aplica.
+PUERTA DE CALIDAD: si no puedes confirmar entidad, numero y fuente oficial, NO generes borrador (no inventes números de norma). Pasa a la siguiente.
+
+## Fase 4 — Relevancia
+Puntúa 0-1 la relevancia para una IPS (ver SKILL.md: habilitación, SOGCS, facturación/RIPS, talento humano, farmacovigilancia, tecnovigilancia, seguridad del paciente, datos de salud). Descarta lo < 0.6.
+
+## Fase 5 — Borrador HITL
+Por cada norma relevante (hasta max_items_per_run), file_write en `output_dir` el archivo `{entidad}-{tipo}-{numero}-{año}.md`:
+
+---
+titulo: "<objeto>"
+entidad: "<MinSalud|Supersalud|Invima|INS>"
+tipo: "<Decreto|Resolución|Circular|Alerta>"
+numero: "<n>"
+fecha: "<AAAA-MM-DD>"
+fuente: "<URL oficial>"
+relevancia: <0-1>
+estado: "pendiente"
+---
+
+**Qué exige:** <resumen>
+**A quién aplica:** <destinatarios>
+**Vigencia:** <vigente / deroga o modifica a ...>
+**Impacto para la Fundación:** <1-2 frases>
+
+NO marques estado "aprobado" tú mismo (eso es decisión humana).
+
+## Fase 6 — Estado y métricas
+memory_store `collector_reg_state` (last_run, normas_conocidas) y las métricas del dashboard:
+- `collector_reg_sources` (fuentes revisadas)
+- `collector_reg_drafts` (borradores generados, acumulado)
+- `collector_reg_last_update` (timestamp)
+
+## Reglas
+- NUNCA inventes normativa: todo dato debe tener fuente oficial. Mejor omitir que inventar.
+- Distingue un proyecto/borrador en consulta de una norma en firme.
+- Si te escriben directamente, pausa la recolección y responde la pregunta.
+"""
+
+# ─── Métricas del dashboard ──────────────────────────────────────────────────
+
+[dashboard]
+[[dashboard.metrics]]
+label = "Fuentes revisadas"
+memory_key = "collector_reg_sources"
+format = "number"
+
+[[dashboard.metrics]]
+label = "Borradores generados"
+memory_key = "collector_reg_drafts"
+format = "number"
+
+[[dashboard.metrics]]
+label = "Última corrida"
+memory_key = "collector_reg_last_update"
+format = "text"

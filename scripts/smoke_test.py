@@ -1,11 +1,7 @@
 #!/usr/bin/env python
-"""Prueba de humo de la cadena RAG -> gemma (Ollama), sin Telegram.
+"""Prueba de humo del bot: RAG local -> Gemini, con costo REAL por consulta.
 
-Verifica:
-  - Ollama responde,
-  - la recuperación devuelve contexto para consultas del dominio,
-  - una consulta fuera de dominio NO recupera contexto (el bot debe decir que no sabe).
-
+Verifica calidad, recuperación de especialistas, datos corporativos y costo.
 Uso: uv run python scripts/smoke_test.py
 """
 
@@ -17,23 +13,36 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from rag.answer import answer, retrieve  # noqa: E402
-from rag.llm import health  # noqa: E402
+from rag.llm import LAST_USAGE, estimate_cost_usd, health  # noqa: E402
 
 QUERIES = [
     "¿Qué incluye el chequeo médico preventivo Gold?",
-    "¿Qué enfermedades trata el servicio de alergología?",
-    "¿Cuál es la capital de Francia?",  # fuera de dominio -> debe responder que no sabe
+    "¿Qué cardiólogos atienden en la Fundación?",          # especialistas (refuerzo)
+    "¿Cuáles son las sedes y sus horarios de atención?",   # datos corporativos
+    "¿Quién ganó el mundial de fútbol de 2022?",           # fuera de dominio -> no sabe
 ]
 
 
 def main() -> None:
-    print("Ollama health:", health())
+    print("chat health:", health())
+    total_usd = 0.0
     for q in QUERIES:
         res = retrieve(q)
+        secs: dict = {}
+        for r in res:
+            secs[r["seccion"]] = secs.get(r["seccion"], 0) + 1
         print("\n" + "=" * 72)
         print("Q:", q)
-        print("recuperados:", len(res), "scores:", [r["score"] for r in res[:5]])
+        print("recuperados:", len(res), "por sección:", secs)
         print("A:", answer(q))
+        if LAST_USAGE:
+            inp = LAST_USAGE.get("input", 0)
+            out = LAST_USAGE.get("output", 0) + LAST_USAGE.get("thoughts", 0)
+            usd = estimate_cost_usd(LAST_USAGE.get("model", ""), inp, out)
+            total_usd += usd
+            print(f"[costo] tokens in/out={inp}/{out}  ~${usd:.6f}  (~COP {usd * 4000:.2f})")
+    print("\n" + "=" * 72)
+    print(f"TOTAL {len(QUERIES)} consultas: ~COP {total_usd * 4000:.1f}   (antes: ~COP 3000 por 8 con OpenFang)")
 
 
 if __name__ == "__main__":

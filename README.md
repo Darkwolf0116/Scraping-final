@@ -1,85 +1,176 @@
-# Asistente Valle del Lili — Bot de Telegram con RAG local (OpenFang + Ollama/gemma)
+# Agent OS (OpenFang) — Fundación Valle del Lili
 
-Bot de Telegram que responde sobre la **Fundación Valle del Lili** (sedes, especialistas,
-servicios y páginas como el chequeo médico preventivo) usando **RAG local** sobre el sitio
-institucional ya scrapeado, y **gemma4:e4b** servido por **Ollama** — todo offline.
+Sistema Operativo Agéntico sobre **OpenFang** para la **Fundación Valle del Lili**,
+con **Google Gemini** como único proveedor de modelo (chat + embeddings; sin Ollama
+ni modelos locales). Implementa la **RUTA B** del proyecto:
 
-> Rama de trabajo: **`prueba`**.
+1. **Entorno + OpenFang + Gemini** — kernel agéntico nativo en Rust, modelo en la nube.
+2. **Migración del conocimiento** a la memoria del OS — **Vector Store** (RAG) + **Structured KV Store**.
+3. **Operaciones autónomas (Hands System)** — `HAND.toml` del **Collector Regulatorio** (Opción B/C).
+4. **Despliegue en canales** — bridge nativo de **Telegram** (público + interno).
 
 ---
 
-## Arquitectura (resumen de decisiones)
-
-El plan original asumía cosas de OpenFang que **no existen** en la versión actual
-(ingesta semántica masiva por REST, dos bots de Telegram con tokens distintos,
-`openfang hand install`, botones inline). Tras analizar el repo y la API reales de
-OpenFang, el diseño se ajustó así:
-
-1. **RAG como índice vectorial local propio.** No hay endpoint REST de ingesta semántica
-   en OpenFang. `scripts/ingest_docs.py` trocea los `.md`, calcula *embeddings* con
-   `embeddinggemma` (Ollama) y los guarda en `data/rag_index.sqlite`. La búsqueda es por
-   similitud de coseno (`rag/index.py`).
-
-2. **Generación directa con gemma vía Ollama.** Enrutar la generación por el bucle de
-   agente de OpenFang infla el prompt a ~20.000 tokens (inyecta 61 *skills* + andamiaje de
-   *tool-calling*), lo que **desborda a gemma4:e4b (4B local)** y la hace responder basura.
-   Por eso el orquestador habla **directamente con Ollama** con un prompt corto y
-   controlado: `system` + contexto RAG recuperado + pregunta. Grounding determinista, sin
-   *tool-calling* (que Gemma tampoco soporta).
-
-3. **OpenFang queda como infraestructura opcional** (daemon, dashboard, registro del
-   agente). `agents/public_agent.toml` define la *persona*/reglas del asistente y es la
-   **fuente única** del *system prompt* (el orquestador lo lee de ahí). `scripts/configure_env.py`
-   y `scripts/rag_mcp_server.py` permiten integrarlo si se desea (ver más abajo).
+## Arquitectura
 
 ```
-Telegram ──► scripts/telegram_bot.py
-                 │  1) rag.index.search()  ── embeddinggemma (Ollama) + coseno
-                 │  2) arma prompt: system (de public_agent.toml) + contexto + pregunta
-                 └► rag.llm.chat() ── gemma4:e4b (Ollama /api/chat) ──► respuesta
+Telegram ──► [channels.telegram] (bridge nativo de OpenFang)
+   │
+   ├─ chat público ─► agente "asistente-publico"  (Gemini 3.1 Flash-Lite)
+   │                     │
+   │                     ├─► MCP buscar_institucional()      → Vector Store (RAG)
+   │                     └─► MCP consultar_datos_corporativos → KV Store nativo
+   │
+   └─ grupo interno ─► agente "asistente-interno"
+                          └─► MCP buscar_regulatorio()       → índice regulatorio
+
+Hand autónomo "collector-regulatorio"  (corre solo, schedule semanal)
+   └─ vigila MinSalud/Supersalud/Invima → borradores → [aprobación HITL] → índice regulatorio
+                                                          dashboard: http://127.0.0.1:4200
 ```
 
 ---
 
 ## Requisitos
 
-- **Ollama** en marcha (`ollama serve`) con los modelos:
-  - `gemma4:e4b` (chat) — `ollama pull gemma4:e4b`
-  - `embeddinggemma:latest` (embeddings) — `ollama pull embeddinggemma`
-- **uv** (gestiona el entorno y dependencias).
-- Python ≥ 3.13 (lo provee `uv`).
-- *(Opcional)* **OpenFang** para dashboard/daemon.
+- **Google Gemini API key** (gratis en https://aistudio.google.com/apikey) — único proveedor.
+- **OpenFang** instalado: `curl -fsSL https://openfang.sh/install | sh` (~32 MB, 2 GB RAM).
+- **uv** (gestor de entorno Python) y Python >= 3.13.
+
+> Este proyecto **no usa Ollama**. Toda la inteligencia (chat y embeddings) corre
+> contra la API de Gemini.
 
 ---
 
-## Puesta en marcha
+## Puesta en marcha — solo dos comandos
 
 ```bash
-# 1) Dependencias
-uv sync
+copy .env.example .env     # edita .env: pega GEMINI_API_KEY y TELEGRAM_BOT_TOKEN
 
-# 2) (si hace falta) generar los .md del sitio en ./output
-uv run python main.py            # scraper existente
-
-# 3) Construir el índice RAG (embeddings locales)
-uv run python scripts/ingest_docs.py
-
-# 4) Configurar entorno
-copy .env.example .env           # Windows  (cp en Unix)
-#   edita .env y pega TELEGRAM_BOT_TOKEN (de @BotFather)
-
-# 5a) Probar SIN Telegram (verifica RAG + gemma):
-uv run python scripts/telegram_bot.py --ask "¿Qué incluye el chequeo Gold?"
-
-# 5b) Arrancar el bot de Telegram:
-uv run python scripts/telegram_bot.py
+make setup                 # (1) offline: deps + índices RAG/regulatorio + config OpenFang
+make start                 # (2) levanta OpenFang + Telegram + dashboard + activa el Hand
 ```
 
-Prueba de humo completa (incluye una consulta fuera de dominio):
+- `make setup` deja todo listo sin tocar nada del daemon (deps, Vector Store,
+  índice regulatorio de demo y `~/.openfang/config.toml`).
+- `make start` arranca OpenFang (daemon + bridge de Telegram + **dashboard en
+  http://127.0.0.1:4200**) y registra/activa el Hand `collector-regulatorio`.
+  Ctrl+C lo detiene.
+
+> Si aún no tienes el scraping: `make run` (genera los `.md` de `output/`) antes de `make setup`.
+> ¿Mínimo costo y sin OpenFang? `make start-directo` (responde sin el bucle de agente).
+
+---
+
+## Módulo 2 — Memoria del OS (Vector Store + KV Store)
+
+OpenFang asimila la identidad corporativa en dos de sus capas de memoria:
+
+| Capa | Contenido | Cómo se carga |
+|------|-----------|---------------|
+| **Vector Store** (semántico) | Especialistas, servicios, chequeos, páginas (scraping) | `make setup` → `data/rag_index.sqlite` |
+| **Structured KV Store** (nativo del agente) | Sedes, horarios, contactos, EPS, NIT | `make kv` *(una vez, con el daemon arriba)* |
+
+El agente recupera de cada capa con su herramienta MCP (`buscar_institucional` /
+`consultar_datos_corporativos`). El Vector Store lo crea `make setup`; el KV nativo
+se carga una vez con `make kv` después de `make start`.
+
+---
+
+## Módulo 3 — Hands System (operaciones autónomas)
+
+Un **Hand** es un paquete de capacidad **autónomo**: corre solo en su horario,
+construye conocimiento y reporta al dashboard. Aquí se implementa un Hand
+**personalizado** (Opción B/C): **inteligencia regulatoria de salud**.
+
+```
+hands/collector-regulatorio/
+├── HAND.toml          # manifiesto: id, tools, [[settings]], [agent] (con el playbook
+│                      #   inline en system_prompt) y [dashboard] — esquema real de OpenFang
+├── SKILL.md           # conocimiento experto (regulación de salud CO), se inyecta solo
+└── samples/           # normas de ejemplo para la demo (semilla del índice)
+```
+
+**Qué hace:** vigila MinSalud, Supersalud, Invima e INS, detecta normativa nueva
+relevante para una IPS, la resume y deja **borradores** para aprobación humana
+(**HITL**) antes de exponerla al agente interno.
+
+**`make start` registra y activa el Hand automáticamente.** Para gestionarlo a mano:
 
 ```bash
-uv run python scripts/smoke_test.py
+openfang hand status   collector-regulatorio     # métricas en http://127.0.0.1:4200
+openfang hand pause    collector-regulatorio
+openfang hand activate collector-regulatorio
 ```
+
+### Pipeline HITL (borrador → aprobación → índice)
+
+`make setup` ya siembra el índice regulatorio con las normas de ejemplo. En operación,
+el Hand deja borradores nuevos en `data/pending_regulatory/` con `estado: pendiente`;
+el ciclo humano (HITL) es:
+
+```bash
+# Un humano revisa y aprueba un borrador:
+uv run python scripts/ingest_regulatory.py --approve <archivo.md>
+
+# Reconstruir el índice regulatorio con lo APROBADO:
+make regulatory
+```
+
+Tras esto, el agente interno responde normativa vía `buscar_regulatorio`.
+
+> **Otras Hands de OpenFang** (Opción A "Lead", Browser, Collector, etc.) se activan
+> igual: `openfang hand activate <nombre>`. Aquí se priorizó el Collector regulatorio
+> por ser el más auténtico para una institución de salud.
+
+---
+
+## Módulo 4 — Canales (Telegram)
+
+`configure_env.py` escribe en `~/.openfang/config.toml` el **bridge nativo de Telegram**:
+
+- **Chat público** → `asistente-publico` (atención al usuario).
+- **Grupo interno** (`TELEGRAM_INTERNAL_GROUP_ID`) → `asistente-interno` (regulatorio).
+
+Crea el bot con **@BotFather** (`/newbot`), pega el `TELEGRAM_BOT_TOKEN` en `.env` y
+ejecuta `make setup` (que genera el config). Un cliente escribe al bot y es atendido
+por el agente con el contexto ingerido (RAG interno del OS).
+
+---
+
+## Economía de tokens (Gemini cobra por token)
+
+Palancas ya aplicadas para mantener el costo bajo:
+
+- **Modelo `*-flash-lite`** por defecto (chat y agentes) — el tier más barato.
+- **Thinking desactivado** (`thinking_budget=0`) en todas las llamadas de chat.
+- **Skills bundled suprimidos** en los agentes (`skills = ["__sin_skills__"]`): evita
+  reinyectar ~20K tokens/mensaje del bucle de agente de OpenFang.
+- **Hand acotado:** schedule **semanal**, `max_items_per_run`, `max_iterations` y
+  resúmenes breves → cada corrida autónoma tiene un costo techo.
+- **Embeddings** solo al ingerir y 1 por consulta (muy barato).
+- **Ruta directa opcional** (`make start-directo`): responde sin el bucle de agente
+  de OpenFang; es la opción de **mínimo costo** si no necesitas Hands ni dashboard.
+
+Mide el costo real por consulta:
+
+```bash
+make test     # imprime tokens y ~COP por pregunta
+```
+
+---
+
+## Variables de entorno (`.env`)
+
+| Variable | Ejemplo | Descripción |
+|----------|---------|-------------|
+| `GEMINI_API_KEY` | `AIza...` | **(Requerido)** API key de Google Gemini |
+| `GEMINI_CHAT_MODEL` | `gemini-3.1-flash-lite` | Modelo de chat (tier lite = más barato) |
+| `GEMINI_EMBEDDING_MODEL` | `gemini-embedding-001` | Modelo de embeddings (RAG) |
+| `TELEGRAM_BOT_TOKEN` | `86035...` | Token del bot (@BotFather) |
+| `AGENT_NAME` | `asistente-publico` | Agente público por defecto |
+| `TELEGRAM_INTERNAL_GROUP_ID` | `-100...` | *(opcional)* grupo interno → agente regulatorio |
+| `TELEGRAM_ADMIN_CHAT_ID` | `12345` | *(opcional)* admin que aprueba borradores (HITL) |
 
 ---
 
@@ -87,58 +178,71 @@ uv run python scripts/smoke_test.py
 
 ```
 .
-├── output/                       # .md scrapeados (entrada del RAG; generados por main.py)
-├── data/rag_index.sqlite         # índice vectorial (generado; reconstruible)
-├── rag/                          # paquete RAG
-│   ├── paths.py                  # rutas absolutas (raíz calculada en runtime)
-│   ├── env.py                    # carga de .env y valores por defecto
-│   ├── chunking.py               # troceo por cabeceras + limpieza de ruido
-│   ├── embeddings.py             # embeddings vía Ollama (embeddinggemma)
-│   ├── index.py                  # índice SQLite + búsqueda por coseno
-│   ├── llm.py                    # generación con gemma vía Ollama (/api/chat)
-│   └── answer.py                 # RAG por inyección: search + prompt + gemma
+├── output/                       # .md scrapeados (entrada del RAG)
+├── data/
+│   ├── institucional.json        # datos corporativos (KV)
+│   ├── rag_index.sqlite          # Vector Store (generado)
+│   ├── pending_regulatory/       # borradores del Hand (HITL)
+│   └── regulatory_index.sqlite   # índice regulatorio aprobado (generado)
+├── rag/                          # paquete RAG (Gemini)
+│   ├── env.py · paths.py         # entorno y rutas
+│   ├── chunking.py               # troceo por cabeceras
+│   ├── embeddings.py             # embeddings con Gemini
+│   ├── index.py                  # índice SQLite + búsqueda coseno
+│   ├── llm.py                    # chat con Gemini (thinking off)
+│   └── answer.py                 # RAG por inyección de contexto (ruta directa)
+├── agents/
+│   ├── public_agent.toml         # manifiesto agente público
+│   └── internal_agent.toml       # manifiesto agente interno (regulatorio)
+├── hands/
+│   └── collector-regulatorio/    # Hand autónomo (HAND.toml con prompt inline + SKILL.md)
 ├── scripts/
-│   ├── ingest_docs.py            # construye el índice RAG
-│   ├── telegram_bot.py           # orquestador del bot (long-polling)
-│   ├── smoke_test.py             # prueba de humo end-to-end
-│   ├── configure_env.py          # (opcional) configura OpenFang con gemma
-│   └── rag_mcp_server.py         # (opcional) servidor MCP para modelos con tool-calling
-├── agents/public_agent.toml      # persona + system prompt (fuente única)
+│   ├── ingest_docs.py            # Vector Store
+│   ├── ingest_kv.py              # KV Store nativo
+│   ├── ingest_regulatory.py      # pipeline HITL → índice regulatorio
+│   ├── configure_env.py          # genera config.toml de OpenFang
+│   ├── rag_mcp_server.py         # herramientas MCP del RAG
+│   ├── telegram_bot.py           # ruta directa (bajo costo, sin agente OpenFang)
+│   └── smoke_test.py             # prueba de humo + costo real
 └── .env.example
 ```
 
-## Chunking (troceo) por sección
+## Comandos (Makefile)
 
-- **especialistas/**: 1 chunk por archivo (perfil completo); se conservan las categorías como metadato.
-- **servicios/**: 1 chunk por encabezado H2; se elimina el bloque `## Especialistas que pueden atenderte`.
-- **sedes/**: 1 chunk por especialidad (H3) de "Servicios destacados" + intro.
-- **pages/**: 1 chunk por H2; si hay H3 (p. ej. Basic/Advance/Gold), 1 chunk por H3.
-- En todos: se elimina `## Enlaces encontrados en esta página`.
+**Flujo principal — solo dos:**
 
-## Criterios de aceptación
+```bash
+make setup    # (1) prepara todo offline (deps + índices + config OpenFang)
+make start    # (2) levanta el Agent OS (OpenFang + Telegram + dashboard + Hand)
+```
 
-1. **Detección de archivos** — `ingest_docs.py` falla con un mensaje claro si no hay `.md`. ✓
-2. **Limpieza** — ningún chunk contiene `## Enlaces encontrados...` ni el bloque de médicos. ✓ (verificado en la ingesta)
-3. **Anti-alucinación** — si la búsqueda no recupera contexto (consulta fuera de dominio),
-   el bot indica que no tiene esa información, en vez de inventar. ✓ (el system prompt lo exige
-   y el umbral `MIN_SCORE` descarta resultados irrelevantes)
+**Avanzados (opcionales):**
+
+```bash
+make start-directo   # ruta sin OpenFang (mínimo costo de tokens)
+make kv              # cargar institucional.json al KV nativo (daemon arriba)
+make rebuild         # reconstruir el Vector Store (RAG)
+make regulatory      # reconstruir el índice regulatorio (borradores aprobados)
+make test            # prueba de humo (tokens + costo)
+make help            # lista todos los targets
+
+openfang status                   # estado del daemon y agentes
+openfang chat asistente-publico   # chat directo con el agente
+```
 
 ---
 
-## Integración opcional con OpenFang
+## Solución de problemas
 
-```bash
-uv run python scripts/configure_env.py   # default_model -> ollama/gemma4:e4b, copia el agente
-openfang start                            # dashboard en http://127.0.0.1:4200/
-```
+**El agente no encuentra especialistas / datos ("inconveniente técnico").**
+Significa que el servidor MCP `rag` no está cargado en el daemon. OpenFang ejecuta los
+MCP en un sandbox que limpia el entorno, por lo que el RAG se lanza con el **python del
+venv** (no `uv`) y reenvía `GEMINI_API_KEY` vía la lista `env`. Si lo ves: `make start`
+(regenera el config y reinicia el daemon). Verifica con `openfang logs` que el servidor
+`rag` arrancó y expone `buscar_institucional`.
 
-`rag_mcp_server.py` expone la búsqueda como herramienta MCP: útil **solo** si se usa un
-modelo con *tool-calling* (no Gemma). No es necesario para el bot.
+**`Daemon already running`.** Un daemon viejo no aplica la config nueva. `make start` ya
+lo detiene y reinicia solo; si lo haces a mano: `openfang stop` y vuelve a arrancar.
 
-## Fase 2 (pendiente)
-
-Bot interno restringido a un grupo privado, colector autónomo de normativa de salud
-(MinSalud/Supersalud/Invima) y flujo HITL de aprobación por Telegram. Se implementará
-sobre esta misma base (RAG local + gemma) usando el agendador/`cron` de OpenFang y
-aprobación por **comando** (`/approve`), ya que el adaptador de Telegram de OpenFang no
-soporta botones inline.
+**`make start` cambia config/daemon cada vez.** Es intencional: regenerar el config es
+gratis (no usa API) y garantiza que el MCP y el bridge queden correctos.

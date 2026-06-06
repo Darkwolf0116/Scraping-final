@@ -17,3 +17,11 @@ output/
 
 # Datos generados (índice RAG)
 data/
+
+# Logs del daemon de OpenFang (depuración)
+daemon*.log
+daemon*.out.log
+daemon*.err.log
+
+# Artefacto accidental de algún comando con %SystemDrive%
+%SystemDrive%/
