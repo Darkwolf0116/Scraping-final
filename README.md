@@ -14,19 +14,44 @@ ni modelos locales). Implementa la **RUTA B** del proyecto:
 ## Arquitectura
 
 ```
-Telegram ──► [channels.telegram] (bridge nativo de OpenFang)
-   │
-   ├─ chat público ─► agente "asistente-publico"  (Gemini 2.5 Flash-Lite)
-   │                     │
-   │                     ├─► MCP buscar_institucional()      → Vector Store (RAG)
-   │                     └─► MCP consultar_datos_corporativos → KV Store nativo
-   │
-   └─ grupo interno ─► agente "asistente-interno"
-                          └─► MCP buscar_regulatorio()       → índice regulatorio
+┌─ FASE 1 · INGESTA DEL CONOCIMIENTO (offline, una vez) ─────────────────────────┐
+│                                                                                │
+│  Sitio web  valledellili.org                                                   │
+│      │  (sitemap_index.xml)                                                     │
+│      ▼                                                                          │
+│  scraper/  (sitemap → fetcher → extractor)  ──►  output/<sección>/*.md          │
+│      │           descarga + limpia HTML            (Markdown + frontmatter)     │
+│      ▼                                                                          │
+│  rag/chunking  ──►  Chunks  ──►  rag/embeddings (Gemini, vectores 3072-d)       │
+│                                        │                                        │
+│                                        ▼                                        │
+│                              data/rag_index.sqlite      ◄── Vector Store (RAG)  │
+│                                                                                │
+│  data/institucional.json  ──► ingest_kv ──►  KV Store nativo del agente         │
+└────────────────────────────────────────────────────────────────────────────────┘
 
-Hand autónomo "collector-regulatorio"  (corre solo, schedule semanal)
-   └─ vigila MinSalud/Supersalud/Invima → borradores → [aprobación HITL] → índice regulatorio
-                                                          dashboard: http://127.0.0.1:4200
+┌─ FASE 2 · EJECUCIÓN (en vivo) ─────────────────────────────────────────────────┐
+│                                                                                │
+│  Usuario ─► Telegram ─► [bridge nativo de OpenFang] ─► daemon OpenFang (:4200)  │
+│                                       │                                          │
+│   chat público ───────────────────────┤                                         │
+│      agente "asistente-publico" (Gemini 2.5 Flash-Lite)                        │
+│          │  tool-calling (MCP)                                                  │
+│          ├─► buscar_institucional()        → Vector Store (RAG)                 │
+│          └─► consultar_datos_corporativos  → KV Store nativo                    │
+│                                       │                                          │
+│   grupo interno ───────────────────────┤                                        │
+│      agente "asistente-interno"                                                 │
+│          └─► buscar_regulatorio()          → índice regulatorio                 │
+│                                       │                                          │
+│      Gemini redacta SOLO con el contexto recuperado ─► respuesta ─► Telegram    │
+└────────────────────────────────────────────────────────────────────────────────┘
+
+┌─ AUTONOMÍA · Hand "collector-regulatorio" (corre solo, schedule semanal) ───────┐
+│  vigila MinSalud / Supersalud / Invima / INS  ─►  borradores                    │
+│      (data/pending_regulatory/)  ─► [aprobación HITL: ingest_regulatory]  ─►     │
+│      índice regulatorio          Monitoreo en el dashboard: http://127.0.0.1:4200│
+└────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -43,8 +68,6 @@ Hand autónomo "collector-regulatorio"  (corre solo, schedule semanal)
 
 - **OpenFang (nativa):** `make start` → con *tool-calling*, Hands y dashboard. Es la ruta oficial de la RUTA B.
 - **Directa (mínimo costo):** `make start-directo` → `rag/answer.py` hace la búsqueda e inyecta el contexto en **una sola llamada** a Gemini, sin el bucle de agente.
-
-> Para entender la lógica a fondo (función por función), ver **[explicación.md](explicación.md)**.
 
 ---
 
@@ -225,8 +248,6 @@ make test     # imprime tokens y ~COP por pregunta
 ├── start_bot.ps1                 # launcher de `make start` (orquesta OpenFang)
 ├── Makefile                      # comandos (setup, start, kv, ...)
 ├── README.md                     # esta guía
-├── explicación.md                # documentación técnica a fondo
-├── guión_sustentación.md         # guión de sustentación (4 integrantes)
 └── .env.example
 ```
 
@@ -252,16 +273,6 @@ make help            # lista todos los targets
 openfang status                   # estado del daemon y agentes
 openfang chat asistente-publico   # chat directo con el agente
 ```
-
----
-
-## Documentación adicional
-
-- **[explicación.md](explicación.md)** — documentación técnica completa: arquitectura,
-  pipeline de datos, cada script con sus funciones clave, decisiones de diseño (gotchas)
-  y flujo end-to-end.
-- **[guión_sustentación.md](guión_sustentación.md)** — guión de la sustentación (15 min,
-  repartido entre los 4 integrantes) con demo en vivo y batería de preguntas del jurado.
 
 ---
 
