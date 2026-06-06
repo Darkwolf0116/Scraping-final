@@ -16,7 +16,7 @@ ni modelos locales). Implementa la **RUTA B** del proyecto:
 ```
 Telegram ──► [channels.telegram] (bridge nativo de OpenFang)
    │
-   ├─ chat público ─► agente "asistente-publico"  (Gemini 3.1 Flash-Lite)
+   ├─ chat público ─► agente "asistente-publico"  (Gemini 2.5 Flash-Lite)
    │                     │
    │                     ├─► MCP buscar_institucional()      → Vector Store (RAG)
    │                     └─► MCP consultar_datos_corporativos → KV Store nativo
@@ -31,11 +31,29 @@ Hand autónomo "collector-regulatorio"  (corre solo, schedule semanal)
 
 ---
 
+## Cómo funciona (flujo de una consulta)
+
+1. El usuario escribe por **Telegram**; el *bridge* nativo de OpenFang entrega el mensaje al agente `asistente-publico`.
+2. El agente (Gemini) **decide llamar una herramienta** (*tool-calling*): para médicos/servicios usa `buscar_institucional`; para sedes/horarios/contactos, `consultar_datos_corporativos`.
+3. La herramienta vive en un **servidor MCP** (Python) que consulta el RAG: convierte la pregunta en un *embedding* y rankea por **similitud de coseno** contra el Vector Store (SQLite).
+4. El agente recibe los fragmentos relevantes y **Gemini redacta** la respuesta usando *solo* ese contexto. **Regla de oro: no inventa.**
+5. La respuesta vuelve al usuario por Telegram.
+
+**Dos rutas de ejecución** comparten el mismo cerebro RAG (`rag/`):
+
+- **OpenFang (nativa):** `make start` → con *tool-calling*, Hands y dashboard. Es la ruta oficial de la RUTA B.
+- **Directa (mínimo costo):** `make start-directo` → `rag/answer.py` hace la búsqueda e inyecta el contexto en **una sola llamada** a Gemini, sin el bucle de agente.
+
+> Para entender la lógica a fondo (función por función), ver **[explicación.md](explicación.md)**.
+
+---
+
 ## Requisitos
 
 - **Google Gemini API key** (gratis en https://aistudio.google.com/apikey) — único proveedor.
 - **OpenFang** instalado: `curl -fsSL https://openfang.sh/install | sh` (~32 MB, 2 GB RAM).
 - **uv** (gestor de entorno Python) y Python >= 3.13.
+- **Un bot de Telegram**: créalo con [@BotFather](https://t.me/BotFather) (`/newbot`) y copia el **token**.
 
 > Este proyecto **no usa Ollama**. Toda la inteligencia (chat y embeddings) corre
 > contra la API de Gemini.
@@ -165,7 +183,7 @@ make test     # imprime tokens y ~COP por pregunta
 | Variable | Ejemplo | Descripción |
 |----------|---------|-------------|
 | `GEMINI_API_KEY` | `AIza...` | **(Requerido)** API key de Google Gemini |
-| `GEMINI_CHAT_MODEL` | `gemini-3.1-flash-lite` | Modelo de chat (tier lite = más barato) |
+| `GEMINI_CHAT_MODEL` | `gemini-2.5-flash-lite` | Modelo de chat. **Debe existir en el catálogo de OpenFang** y soportar *tools* |
 | `GEMINI_EMBEDDING_MODEL` | `gemini-embedding-001` | Modelo de embeddings (RAG) |
 | `TELEGRAM_BOT_TOKEN` | `86035...` | Token del bot (@BotFather) |
 | `AGENT_NAME` | `asistente-publico` | Agente público por defecto |
@@ -195,7 +213,7 @@ make test     # imprime tokens y ~COP por pregunta
 │   ├── public_agent.toml         # manifiesto agente público
 │   └── internal_agent.toml       # manifiesto agente interno (regulatorio)
 ├── hands/
-│   └── collector-regulatorio/    # Hand autónomo (HAND.toml con prompt inline + SKILL.md)
+│   └── collector-regulatorio/    # Hand autónomo (HAND.toml + SKILL.md + samples/)
 ├── scripts/
 │   ├── ingest_docs.py            # Vector Store
 │   ├── ingest_kv.py              # KV Store nativo
@@ -204,6 +222,11 @@ make test     # imprime tokens y ~COP por pregunta
 │   ├── rag_mcp_server.py         # herramientas MCP del RAG
 │   ├── telegram_bot.py           # ruta directa (bajo costo, sin agente OpenFang)
 │   └── smoke_test.py             # prueba de humo + costo real
+├── start_bot.ps1                 # launcher de `make start` (orquesta OpenFang)
+├── Makefile                      # comandos (setup, start, kv, ...)
+├── README.md                     # esta guía
+├── explicación.md                # documentación técnica a fondo
+├── guión_sustentación.md         # guión de sustentación (4 integrantes)
 └── .env.example
 ```
 
@@ -232,7 +255,23 @@ openfang chat asistente-publico   # chat directo con el agente
 
 ---
 
+## Documentación adicional
+
+- **[explicación.md](explicación.md)** — documentación técnica completa: arquitectura,
+  pipeline de datos, cada script con sus funciones clave, decisiones de diseño (gotchas)
+  y flujo end-to-end.
+- **[guión_sustentación.md](guión_sustentación.md)** — guión de la sustentación (15 min,
+  repartido entre los 4 integrantes) con demo en vivo y batería de preguntas del jurado.
+
+---
+
 ## Solución de problemas
+
+**El agente responde pero NO usa las herramientas (da datos genéricos o "no tengo acceso").**
+Casi siempre es el **modelo**: el ID en `GEMINI_CHAT_MODEL` y en los manifiestos de `agents/`
+debe existir en el catálogo de OpenFang y soportar *tools*. Por ejemplo, `gemini-3.1-flash-lite`
+(sin `-preview`) **no existe** → OpenFang no habilita *tool-calling*; usa `gemini-2.5-flash-lite`.
+Si el agente "aprendió" a responder mal, limpia su sesión (en Telegram: comando `/new`) y reintenta.
 
 **El agente no encuentra especialistas / datos ("inconveniente técnico").**
 Significa que el servidor MCP `rag` no está cargado en el daemon. OpenFang ejecuta los
